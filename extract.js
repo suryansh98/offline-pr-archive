@@ -187,6 +187,6 @@ fs.writeFileSync(OUT, JSON.stringify({
   prs: all,
 }));
 
-const withDesc = all.filter(p => p.description).length;
+const withDesc = all.filter(p => (p.description && p.description.length > 20) || p.commits.some(c => c.body && c.body.length > 20)).length;
 console.log(`\n${all.length} PRs -> prs.json (${(fs.statSync(OUT).size / 1048576).toFixed(1)} MB)`);
 console.log(`${withDesc} with a description (${Math.round(withDesc / all.length * 100)}%)`);

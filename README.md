@@ -17,13 +17,20 @@ That is a pull request: number, title, author, date, description, and the comple
 ## Usage
 
 ```sh
-node extract.js /path/to/your/repos   # index every clone in that directory
-node server.js                        # http://localhost:4000
+node server.js      # http://localhost:4000
 ```
 
-No dependencies and no build step — just Node and `git` on your PATH. Re-run `extract.js` whenever the clones change.
+Open it and hit **Index folder**. You get a folder browser that marks which directories are git repos as you navigate, and tells you how many it found before you commit to indexing. Point it at the parent folder holding your clones — it picks up all of them at once — and indexing takes a few seconds.
 
-`extract.js` scans the given directory for anything containing a `.git`, so point it at the parent folder holding your clones and it picks up all of them at once.
+You can also index from the command line, which is all the button does under the hood:
+
+```sh
+node extract.js /path/to/your/repos
+```
+
+No dependencies and no build step — just Node and `git` on your PATH. Re-index whenever the clones change; the five most recently indexed folders are remembered for one-click switching.
+
+The server binds to `127.0.0.1` only. It lists directories and runs `git` on your behalf, so it has no business being reachable from the network. Override with the `HOST` and `PORT` environment variables if you must.
 
 ## What it shows
 
@@ -54,7 +61,7 @@ Coverage depends entirely on how the team merged. Squash-merge with written PR d
 ## How it works
 
 - **`extract.js`** — walks each clone once with `git log --all --numstat`, matching `subject (#123)` and `Merge pull request #123 from …`. Squash bodies are split into a description plus the sub-commit list; `Co-authored-by` and similar trailers are lifted out of the prose and reported separately. Where a rebase or cherry-pick left several copies of one PR, the copy that landed on the default branch wins. Output is a single `prs.json`.
-- **`server.js`** — loads `prs.json` into memory for filtering and search, and shells out to `git show` for each diff on demand. Nothing is duplicated on disk, so even a patch with hundreds of thousands of changed lines opens instantly; very large diffs are capped and flagged in the UI.
+- **`server.js`** — loads `prs.json` into memory for filtering and search, and shells out to `git show` for each diff on demand. Nothing is duplicated on disk, so even a patch with hundreds of thousands of changed lines opens instantly; very large diffs are capped and flagged in the UI. It also serves the folder browser, and runs `extract.js` as a child process when you index — so a slow or failing scan can't block requests or take the server down.
 - **`public/`** — the interface. Plain HTML, CSS and JavaScript, no framework and no outbound requests.
 
 ## Privacy

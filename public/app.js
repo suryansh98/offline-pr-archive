@@ -152,7 +152,9 @@ async function renderList(params) {
     '<div class="facet"><a href="#" data-facet="prose" data-value="1"' + (cur('prose') ? ' class="on"' : '') + '>' +
       '<span>With description</span><span class="n">' + META.withProse + '</span></a></div>' +
     '<div class="stats">' + META.total + ' PRs indexed<br>' + READ.size + ' marked read<br>' +
-      'generated ' + META.generatedAt.slice(0, 10) + '</div>' +
+      'generated ' + META.generatedAt.slice(0, 10) +
+      (META.workDir ? '<br><span class="src" title="' + esc(META.workDir) + '">' + esc(META.workDir) + '</span>' : '') +
+      '<br><a href="#" data-pick>Index another folder</a></div>' +
     '</aside><section>' +
     '<div class="listhead"><span class="count">' + data.total.toLocaleString() + '</span> pull requests' +
       '<div class="chips">' + chips + '</div><span class="spacer"></span>' +
@@ -287,9 +289,115 @@ async function renderPR(repo, number) {
   window.scrollTo(0, 0);
 }
 
+/* ---------- folder picker ---------- */
+
+const modal = document.getElementById('modal');
+let browsing = null;   // the last /api/browse response, kept so errors can re-render the old view
+
+const recents = () => JSON.parse(localStorage.getItem('fpr-recent') || '[]');
+
+function rememberFolder(dir) {
+  localStorage.setItem('fpr-recent', JSON.stringify([dir, ...recents().filter(d => d !== dir)].slice(0, 5)));
+}
+
+function crumbs(p) {
+  if (!p) return '<span class="crumb on">This computer</span>';
+  const parts = p.split('/').filter(Boolean);
+  let acc = '';
+  return '<a href="#" class="crumb" data-browse="">This computer</a>' + parts.map((part, i) => {
+    acc = i === 0 ? part + '/' : acc.replace(/\/$/, '') + '/' + part;
+    return '<span class="sep">›</span><a href="#" class="crumb" data-browse="' + esc(acc) + '">' + esc(part) + '</a>';
+  }).join('');
+}
+
+function openPicker() {
+  modal.hidden = false;
+  modal.innerHTML = '<div class="sheet"><div class="loading">Loading...</div></div>';
+  showFolder(META && META.workDir ? META.workDir : recents()[0] || '');
+}
+
+async function showFolder(dir) {
+  try {
+    const res = await fetch('/api/browse' + (dir ? '?path=' + encodeURIComponent(dir) : ''));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'could not open that folder');
+    browsing = data;
+    modal.querySelector('.sheet').innerHTML = renderPicker(data, null);
+  } catch (e) {
+    modal.querySelector('.sheet').innerHTML =
+      renderPicker(browsing || { path: null, parent: null, entries: [], repoCount: 0 }, e.message);
+  }
+}
+
+function renderPicker(d, error) {
+  const recent = recents().filter(r => r !== d.path);
+  return '<header><b>Index a folder</b><span class="spacer"></span><button class="iconbtn" data-close>Close</button></header>' +
+    '<div class="crumbs">' + crumbs(d.path) + '</div>' +
+    (error ? '<div class="pickerror">' + esc(error) + '</div>' : '') +
+    '<ul class="dirs">' +
+      (d.path && d.parent !== null ? '<li><a href="#" data-browse="' + esc(d.parent) + '" class="up">↑ ..</a></li>' : '') +
+      (d.entries.length
+        ? d.entries.map(e => '<li><a href="#" data-browse="' + esc(e.path) + '">' +
+            '<span class="dirname">' + esc(e.name) + '</span>' +
+            (e.isRepo ? '<span class="gitbadge">git</span>' : '') + '</a></li>').join('')
+        : '<li class="none">No subfolders here.</li>') +
+    '</ul>' +
+    (recent.length ? '<div class="recent"><h4>Recent</h4>' +
+      recent.map(r => '<a href="#" data-browse="' + esc(r) + '">' + esc(r) + '</a>').join('') + '</div>' : '') +
+    '<footer>' +
+      '<span class="found">' + (d.path
+        ? (d.repoCount ? d.repoCount + ' git repo' + (d.repoCount === 1 ? '' : 's') + ' found here'
+                       : 'No git repos directly in this folder')
+        : 'Pick a drive to start') + '</span>' +
+      '<button class="primary" data-index="' + esc(d.path || '') + '"' + (d.repoCount ? '' : ' disabled') + '>' +
+        'Index this folder</button>' +
+    '</footer>';
+}
+
+async function runIndex(dir) {
+  const sheet = modal.querySelector('.sheet');
+  sheet.innerHTML = '<header><b>Indexing</b></header>' +
+    '<div class="working"><div class="spinner"></div>' +
+    '<p>Reading git history in <code>' + esc(dir) + '</code></p>' +
+    '<p class="dim">Usually a few seconds.</p></div>';
+  try {
+    const res = await fetch('/api/index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: dir }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'indexing failed');
+    META = data.meta;
+    rememberFolder(dir);
+    modal.hidden = true;
+    modal.innerHTML = '';
+    ORDER = [];
+    selected = -1;
+    go(new URLSearchParams());
+    render();
+  } catch (e) {
+    sheet.innerHTML = '<header><b>Indexing failed</b><span class="spacer"></span><button class="iconbtn" data-close>Close</button></header>' +
+      '<div class="working"><p class="pickerror">' + esc(e.message) + '</p>' +
+      '<button class="primary" data-browse="' + esc(dir) + '">Back to the folder list</button></div>';
+  }
+}
+
+modal.addEventListener('click', e => {
+  if (e.target === modal || e.target.closest('[data-close]')) { modal.hidden = true; modal.innerHTML = ''; return; }
+  const nav = e.target.closest('[data-browse]');
+  if (nav) { e.preventDefault(); showFolder(nav.dataset.browse); return; }
+  const run = e.target.closest('[data-index]');
+  if (run && !run.disabled && run.dataset.index) runIndex(run.dataset.index);
+});
+
+document.getElementById('pick').addEventListener('click', openPicker);
+
 /* ---------- events ---------- */
 
 app.addEventListener('click', e => {
+  if (e.target.closest('[data-pick]')) { openPicker(); return; }
+
   const facet = e.target.closest('[data-facet]');
   if (facet) { e.preventDefault(); setParam(facet.dataset.facet, facet.dataset.value); return; }
 
@@ -355,6 +463,10 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!modal.hidden) {
+    if (e.key === 'Escape') { modal.hidden = true; modal.innerHTML = ''; }
+    return;
+  }
   const r = route();
 
   if (e.key === '/') { e.preventDefault(); qBox.focus(); qBox.select(); return; }
@@ -394,7 +506,18 @@ document.getElementById('help').addEventListener('click', () => {
 const savedTheme = localStorage.getItem('fpr-theme');
 if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
 
+function renderEmpty() {
+  app.innerHTML = '<div class="welcome">' +
+    '<h1>Nothing indexed yet</h1>' +
+    '<p>Point this at a folder holding your git clones and it will rebuild their pull request ' +
+    'history from the commits — titles, descriptions and full diffs, entirely offline.</p>' +
+    '<button class="primary" data-pick>Choose a folder</button>' +
+    '<p class="dim">Or from a terminal: <code>node extract.js &lt;folder&gt;</code></p>' +
+    '</div>';
+}
+
 async function render() {
+  if (META && META.empty) return renderEmpty();
   const r = route();
   if (r.view === 'pr') return renderPR(r.repo, r.number);
   selected = -1;

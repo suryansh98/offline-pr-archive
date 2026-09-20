@@ -2,43 +2,52 @@
 // Serves the PR index; diffs are read from the clones on demand so nothing is duplicated on disk.
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 
 const PORT = +process.env.PORT || 4000;
+const HOST = process.env.HOST || '127.0.0.1';   // local only: this process can list the filesystem
 const DATA = path.join(__dirname, 'prs.json');
 const PUBLIC = path.join(__dirname, 'public');
 const MAX_PATCH = 1_500_000;
 
-if (!fs.existsSync(DATA)) {
-  console.error('prs.json missing - run: node extract.js <directory containing your clones>');
-  process.exit(1);
-}
+let db = null, PRS = [], REPOS = new Set(), META = null;
 
-const db = JSON.parse(fs.readFileSync(DATA, 'utf8'));
-const PRS = db.prs;
-const REPOS = new Set(PRS.map(p => p.repo));
 const hasProse = p => (p.description && p.description.length > 20) || p.commits.some(c => c.body && c.body.length > 20);
-for (const p of PRS) {
-  p._prose = hasProse(p);
-  p._haystack = (p.fullTitle + ' ' + p.description + ' ' + p.commits.map(c => c.subject + ' ' + c.body).join(' ') + ' ' + p.author).toLowerCase();
-}
-
-const META = {
-  generatedAt: db.generatedAt,
-  total: PRS.length,
-  withProse: PRS.filter(p => p._prose).length,
-  repos: tally('repo'),
-  authors: tally('author').slice(0, 60),
-  types: tally('type'),
-  scopes: tally('scope').slice(0, 40),
-  years: tally('year'),
-};
 
 function tally(key) {
   const m = new Map();
   for (const p of PRS) { const v = p[key]; if (v) m.set(v, (m.get(v) || 0) + 1); }
   return [...m].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value, count }));
+}
+
+function loadIndex() {
+  if (!fs.existsSync(DATA)) {
+    db = null; PRS = []; REPOS = new Set();
+    META = { empty: true, total: 0, withProse: 0, repos: [], authors: [], types: [], scopes: [], years: [] };
+    return META;
+  }
+  db = JSON.parse(fs.readFileSync(DATA, 'utf8'));
+  PRS = db.prs;
+  REPOS = new Set(PRS.map(p => p.repo));
+  for (const p of PRS) {
+    p._prose = hasProse(p);
+    p._haystack = (p.fullTitle + ' ' + p.description + ' ' + p.commits.map(c => c.subject + ' ' + c.body).join(' ') + ' ' + p.author).toLowerCase();
+  }
+  META = {
+    empty: false,
+    generatedAt: db.generatedAt,
+    workDir: db.workDir,
+    total: PRS.length,
+    withProse: PRS.filter(p => p._prose).length,
+    repos: tally('repo'),
+    authors: tally('author').slice(0, 60),
+    types: tally('type'),
+    scopes: tally('scope').slice(0, 40),
+    years: tally('year'),
+  };
+  return META;
 }
 
 function list(q) {
@@ -78,7 +87,56 @@ function diff(repo, sha, cb) {
     });
 }
 
+/* ---------- folder browsing ---------- */
+
+function drives() {
+  if (process.platform !== 'win32') return [{ name: '/', path: '/', isRepo: false }];
+  const found = [];
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+    const root = letter + ':/';
+    try { fs.accessSync(root); found.push({ name: letter + ':', path: root, isRepo: false }); } catch { /* not mounted */ }
+  }
+  return found;
+}
+
+function browse(dir) {
+  if (!dir) return { path: null, parent: null, entries: drives(), repoCount: 0, home: os.homedir() };
+
+  const here = path.resolve(dir);
+  const entries = [];
+  for (const d of fs.readdirSync(here, { withFileTypes: true })) {
+    if (!d.isDirectory() || d.name.startsWith('.')) continue;
+    const full = path.join(here, d.name);
+    let isRepo = false;
+    try { isRepo = fs.existsSync(path.join(full, '.git')); } catch { /* unreadable */ }
+    entries.push({ name: d.name, path: full.replace(/\\/g, '/'), isRepo });
+  }
+  entries.sort((a, b) => (b.isRepo - a.isRepo) || a.name.localeCompare(b.name));
+
+  const up = path.dirname(here);
+  return {
+    path: here.replace(/\\/g, '/'),
+    parent: up === here ? null : up.replace(/\\/g, '/'),
+    entries,
+    repoCount: entries.filter(e => e.isRepo).length,
+    home: os.homedir(),
+  };
+}
+
+function reindex(dir, cb) {
+  execFile(process.execPath, [path.join(__dirname, 'extract.js'), dir],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    (err, stdout, stderr) => {
+      if (err) return cb(new Error((stderr || err.message).trim().split('\n').pop()));
+      cb(null, loadIndex(), stdout.trim());
+    });
+}
+
+/* ---------- http ---------- */
+
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
+
+loadIndex();
 
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -89,6 +147,25 @@ http.createServer((req, res) => {
   };
 
   if (url.pathname === '/api/meta') return json(200, META);
+
+  if (url.pathname === '/api/browse') {
+    try { return json(200, browse(q.path)); }
+    catch (e) { return json(400, { error: e.code === 'EPERM' || e.code === 'EACCES' ? 'Permission denied' : e.message }); }
+  }
+
+  if (url.pathname === '/api/index' && req.method === 'POST') {
+    let raw = '';
+    req.on('data', c => { raw += c; if (raw.length > 4096) req.destroy(); });
+    return req.on('end', () => {
+      let dir;
+      try { dir = JSON.parse(raw).path; } catch { return json(400, { error: 'bad request' }); }
+      if (!dir || !fs.existsSync(dir)) return json(400, { error: 'that folder does not exist' });
+      reindex(dir, (err, meta, log) => {
+        if (err) return json(500, { error: err.message });
+        json(200, { meta, log });
+      });
+    });
+  }
 
   if (url.pathname === '/api/prs') {
     const all = list(q);
@@ -120,8 +197,10 @@ http.createServer((req, res) => {
   }
   res.writeHead(200, { 'Content-Type': TYPES[path.extname(full)] || 'text/plain', 'Cache-Control': 'no-cache' });
   fs.createReadStream(full).pipe(res);
-}).listen(PORT, () => {
-  console.log(`\n  PR archive`);
-  console.log(`  ${META.total} PRs from ${META.repos.length} repos, ${META.withProse} with descriptions`);
-  console.log(`\n  http://localhost:${PORT}\n`);
+}).listen(PORT, HOST, () => {
+  console.log('\n  PR archive');
+  console.log(META.empty
+    ? '  no index yet - pick a folder in the browser to build one'
+    : `  ${META.total} PRs from ${META.repos.length} repos, ${META.withProse} with descriptions`);
+  console.log(`\n  http://${HOST}:${PORT}\n`);
 });
