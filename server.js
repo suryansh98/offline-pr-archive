@@ -41,6 +41,7 @@ function loadIndex() {
     workDir: db.workDir,
     total: PRS.length,
     withProse: PRS.filter(p => p._prose).length,
+    scanned: db.repos || [],
     repos: tally('repo'),
     authors: tally('author').slice(0, 60),
     types: tally('type'),
@@ -74,10 +75,18 @@ const SLIM = p => ({
   filesChanged: p.filesChanged, prose: p._prose, commits: p.commits.length,
 });
 
+// Merge commits show no diff at all without this, so merge-based PRs would render empty.
+const MERGE_DIFF = (() => {
+  try {
+    const v = require('child_process').execFileSync('git', ['--version'], { encoding: 'utf8' }).match(/(\d+)\.(\d+)/);
+    return v && (+v[1] > 2 || (+v[1] === 2 && +v[2] >= 31)) ? ['--diff-merges=first-parent'] : [];
+  } catch { return []; }
+})();
+
 function diff(repo, sha, cb) {
   if (!REPOS.has(repo) || !/^[0-9a-f]{7,40}$/.test(sha)) return cb(new Error('bad ref'));
   const cwd = path.join(db.workDir, repo);
-  execFile('git', ['show', '--format=', '--patch', '-M', '--no-color', sha],
+  execFile('git', ['show', '--format=', '--patch', '-M', '--no-color', ...MERGE_DIFF, sha],
     { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
     (err, stdout) => {
       if (err) return cb(err);

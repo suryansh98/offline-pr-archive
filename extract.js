@@ -24,6 +24,16 @@ function tryGit(repo, args) {
   try { return git(repo, args); } catch { return null; }
 }
 
+// Merge commits show no diff at all without this, so merge-based PRs would come back empty.
+const MERGE_DIFF = (() => {
+  try {
+    const v = execFileSync('git', ['--version'], { encoding: 'utf8' }).match(/(\d+)\.(\d+)/);
+    const ok = v && (+v[1] > 2 || (+v[1] === 2 && +v[2] >= 31));
+    if (!ok) console.warn('  note: git < 2.31, merge-commit PRs will have no diff');
+    return ok ? ['--diff-merges=first-parent'] : [];
+  } catch { return []; }
+})();
+
 function findRepos(root) {
   return fs.readdirSync(root, { withFileTypes: true })
     .filter(d => d.isDirectory() && fs.existsSync(path.join(root, d.name, '.git')))
@@ -92,13 +102,15 @@ function readRepo(repo) {
   }
 
   const fmt = `${RS}%H${US}%an${US}%ae${US}%aI${US}%s${US}%b${US}`;
-  const raw = git(dir, ['log', '--all', '--numstat', '--no-color', `--format=${fmt}`]);
+  const raw = git(dir, ['log', '--all', '--numstat', '--no-color', ...MERGE_DIFF, `--format=${fmt}`]);
   const byNumber = new Map();
+  let commits = 0;
 
   for (const chunk of raw.split(RS)) {
     if (!chunk.trim()) continue;
     const parts = chunk.split(US);
     if (parts.length < 6) continue;
+    commits++;
     const [sha, author, email, date, subject, body] = parts;
     const tail = parts.slice(6).join(US);
 
@@ -161,7 +173,7 @@ function readRepo(repo) {
       byNumber.set(number, pr);
     }
   }
-  return [...byNumber.values()];
+  return { prs: [...byNumber.values()], commits };
 }
 
 const repos = findRepos(WORK_DIR);
@@ -170,12 +182,13 @@ const summary = [];
 for (const repo of repos) {
   process.stdout.write(`  ${repo.name} ... `);
   try {
-    const prs = readRepo(repo);
+    const { prs, commits } = readRepo(repo);
     all.push(...prs);
-    summary.push({ repo: repo.name, prs: prs.length });
-    console.log(`${prs.length} PRs`);
+    summary.push({ repo: repo.name, prs: prs.length, commits });
+    console.log(prs.length ? `${prs.length} PRs` : `no pull requests (${commits} commits)`);
   } catch (e) {
-    console.log(`skipped (${e.message.split('\n')[0]})`);
+    summary.push({ repo: repo.name, prs: 0, commits: 0, error: e.message.split('\n')[0] });
+    console.log(`unreadable (${e.message.split('\n')[0]})`);
   }
 }
 
@@ -187,6 +200,14 @@ fs.writeFileSync(OUT, JSON.stringify({
   prs: all,
 }));
 
+const withPRs = summary.filter(r => r.prs > 0);
+const skipped = summary.filter(r => !r.prs);
 const withDesc = all.filter(p => (p.description && p.description.length > 20) || p.commits.some(c => c.body && c.body.length > 20)).length;
-console.log(`\n${all.length} PRs -> prs.json (${(fs.statSync(OUT).size / 1048576).toFixed(1)} MB)`);
-console.log(`${withDesc} with a description (${Math.round(withDesc / all.length * 100)}%)`);
+
+console.log(`\n${summary.length} repos scanned, ${withPRs.length} with pull requests`);
+console.log(`${all.length} PRs -> prs.json (${(fs.statSync(OUT).size / 1048576).toFixed(1)} MB)`);
+if (all.length) console.log(`${withDesc} with a description (${Math.round(withDesc / all.length * 100)}%)`);
+if (skipped.length) {
+  // Almost always solo repos committed straight to a branch, so there was never a PR to find.
+  console.log(`\nNo pull requests found in ${skipped.length}: ${skipped.map(r => r.repo).join(', ')}`);
+}

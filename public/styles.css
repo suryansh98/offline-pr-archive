@@ -260,3 +260,16 @@ button.primary[disabled] { background: var(--subtle); color: var(--muted); borde
 .welcome p { color: var(--muted); line-height: 1.6; margin: 0 0 20px; }
 .welcome code { font: 12px var(--mono); background: var(--subtle); padding: .15em .4em; border-radius: 6px; }
 .stats .src { font: 11px var(--mono); word-break: break-all; color: var(--muted); }
+
+/* index result */
+.result { padding: 20px 16px; }
+.result .big { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+.result > .dim { margin: 0 0 16px; font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+ul.tally { list-style: none; margin: 0 0 16px; padding: 0; border: 1px solid var(--border); border-radius: 6px; max-height: 30vh; overflow-y: auto; }
+ul.tally li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--border-muted); font-size: 13px; }
+ul.tally li:first-child { border-top: 0; }
+ul.tally b { font-variant-numeric: tabular-nums; }
+.skipped { border-top: 1px solid var(--border-muted); padding-top: 14px; margin-top: 4px; }
+.skipped h4 { margin: 0 0 6px; font-size: 13px; }
+.skipped p { margin: 0 0 8px; font-size: 13px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.skipped code { font: 11px var(--mono); background: var(--subtle); padding: .15em .4em; border-radius: 6px; }

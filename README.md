@@ -58,9 +58,13 @@ Review comments, approvals, requested changes, labels, CI results and linked iss
 
 Coverage depends entirely on how the team merged. Squash-merge with written PR descriptions reconstructs almost completely; merge commits without bodies leave you the title and the diff. Expect a meaningful share of any real history to be title-only, and note that repositories differ widely: infrastructure repos are often far better documented than application ones.
 
+A repo where everyone committed straight to a branch has no pull requests in its history and yields nothing — there was never a PR to rebuild. Indexing reports which repos those were rather than dropping them silently.
+
 ## How it works
 
 - **`extract.js`** — walks each clone once with `git log --all --numstat`, matching `subject (#123)` and `Merge pull request #123 from …`. Squash bodies are split into a description plus the sub-commit list; `Co-authored-by` and similar trailers are lifted out of the prose and reported separately. Where a rebase or cherry-pick left several copies of one PR, the copy that landed on the default branch wins. Output is a single `prs.json`.
+
+  Merge commits are diffed against their first parent (`--diff-merges=first-parent`), which is the only way a merge-based PR yields a diff at all — git shows nothing for a merge otherwise. That needs **git 2.31+**; on older versions everything still works except that merge-PR diffs come back empty, and extraction says so.
 - **`server.js`** — loads `prs.json` into memory for filtering and search, and shells out to `git show` for each diff on demand. Nothing is duplicated on disk, so even a patch with hundreds of thousands of changed lines opens instantly; very large diffs are capped and flagged in the UI. It also serves the folder browser, and runs `extract.js` as a child process when you index — so a slow or failing scan can't block requests or take the server down.
 - **`public/`** — the interface. Plain HTML, CSS and JavaScript, no framework and no outbound requests.
 

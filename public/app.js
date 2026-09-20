@@ -151,7 +151,10 @@ async function renderList(params) {
     '</select></div>' +
     '<div class="facet"><a href="#" data-facet="prose" data-value="1"' + (cur('prose') ? ' class="on"' : '') + '>' +
       '<span>With description</span><span class="n">' + META.withProse + '</span></a></div>' +
-    '<div class="stats">' + META.total + ' PRs indexed<br>' + READ.size + ' marked read<br>' +
+    '<div class="stats">' + META.total + ' PRs indexed<br>' +
+      (META.scanned && META.scanned.length > META.repos.length
+        ? 'from ' + META.repos.length + ' of ' + META.scanned.length + ' repos scanned<br>' : '') +
+      READ.size + ' marked read<br>' +
       'generated ' + META.generatedAt.slice(0, 10) +
       (META.workDir ? '<br><span class="src" title="' + esc(META.workDir) + '">' + esc(META.workDir) + '</span>' : '') +
       '<br><a href="#" data-pick>Index another folder</a></div>' +
@@ -370,17 +373,40 @@ async function runIndex(dir) {
     if (!res.ok) throw new Error(data.error || 'indexing failed');
     META = data.meta;
     rememberFolder(dir);
-    modal.hidden = true;
-    modal.innerHTML = '';
     ORDER = [];
     selected = -1;
     go(new URLSearchParams());
     render();
+    showIndexResult(dir);
   } catch (e) {
     sheet.innerHTML = '<header><b>Indexing failed</b><span class="spacer"></span><button class="iconbtn" data-close>Close</button></header>' +
       '<div class="working"><p class="pickerror">' + esc(e.message) + '</p>' +
       '<button class="primary" data-browse="' + esc(dir) + '">Back to the folder list</button></div>';
   }
+}
+
+// Repos with no PRs are dropped silently otherwise, which reads like the scan missed them.
+function showIndexResult(dir) {
+  const scanned = (META.scanned || []);
+  const found = scanned.filter(r => r.prs > 0);
+  const none = scanned.filter(r => !r.prs && !r.error);
+  const broken = scanned.filter(r => r.error);
+
+  modal.querySelector('.sheet').innerHTML =
+    '<header><b>Indexed</b><span class="spacer"></span><button class="iconbtn" data-close>Done</button></header>' +
+    '<div class="result">' +
+      '<p class="big">' + META.total.toLocaleString() + ' pull requests from ' +
+        found.length + ' of ' + scanned.length + ' repos</p>' +
+      '<p class="dim">' + esc(dir) + '</p>' +
+      (found.length ? '<ul class="tally">' + found.sort((a, b) => b.prs - a.prs).map(r =>
+        '<li><span>' + esc(r.repo) + '</span><b>' + r.prs + '</b></li>').join('') + '</ul>' : '') +
+      (none.length ? '<div class="skipped"><h4>No pull requests found in ' + none.length + '</h4>' +
+        '<p>' + none.map(r => esc(r.repo)).join(', ') + '</p>' +
+        '<p class="dim">Their history has no <code>(#123)</code> squash commits or merge-PR commits — ' +
+        'usually solo work committed straight to a branch, so there was never a pull request to rebuild.</p></div>' : '') +
+      (broken.length ? '<div class="skipped"><h4>Could not read ' + broken.length + '</h4><p>' +
+        broken.map(r => esc(r.repo) + ' (' + esc(r.error) + ')').join(', ') + '</p></div>' : '') +
+    '</div>';
 }
 
 modal.addEventListener('click', e => {
